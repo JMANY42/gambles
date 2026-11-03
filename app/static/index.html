@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gambles · Kalshi Paper Trading</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎲</text></svg>">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">🎲</span>
+      <div>
+        <h1>Gambles</h1>
+        <div class="tagline">Kalshi paper trading: live odds, no real money</div>
+      </div>
+    </div>
+    <div class="topbar-controls">
+      <label class="pf-select">
+        <span>Portfolio</span>
+        <select id="portfolioSelect"></select>
+      </label>
+      <button id="refreshBtn" class="btn ghost" title="Refresh prices & settle finished markets">↻ Refresh</button>
+      <span id="statusPill" class="pill">connecting…</span>
+    </div>
+  </header>
+
+  <main>
+    <section id="summary" class="cards"></section>
+
+    <section class="panel chart-panel">
+      <div class="panel-head">
+        <h2>Equity over time</h2>
+        <span class="muted" id="chartNote"></span>
+      </div>
+      <div id="equityChart" class="chart"></div>
+    </section>
+
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="markets">Available Bets</button>
+      <button class="tab" data-tab="active">Active Bets <span class="count" id="activeCount"></span></button>
+      <button class="tab" data-tab="history">History &amp; Breakdown</button>
+      <button class="tab" data-tab="compare">Dem vs GOP</button>
+      <button class="tab" data-tab="portfolios">Portfolios</button>
+    </nav>
+
+    <!-- Markets -->
+    <section class="tabpane active" id="tab-markets">
+      <div class="toolbar">
+        <div class="seg" id="marketSource">
+          <button class="active" data-src="midterms">2026 Midterms</button>
+          <button data-src="all">All Kalshi</button>
+        </div>
+        <input id="marketSearch" type="search" placeholder="Search races, candidates, states…">
+        <select id="chamberFilter">
+          <option value="">All races</option>
+          <option>Control</option><option>Senate</option><option>House</option><option>Governor</option>
+        </select>
+        <select id="categoryFilter" hidden><option value="">All categories</option></select>
+        <form id="tickerLookup" class="inline-form">
+          <input name="ticker" placeholder="Market ticker, e.g. CONTROLH-2026-D">
+          <button class="btn ghost">Look up</button>
+        </form>
+      </div>
+      <div id="catalogNote" class="muted small"></div>
+      <div id="marketList"></div>
+      <div class="center"><button id="loadMore" class="btn ghost" hidden>Load more events</button></div>
+    </section>
+
+    <!-- Active -->
+    <section class="tabpane" id="tab-active">
+      <div class="toolbar">
+        <input id="activeSearch" type="search" placeholder="Filter active bets…">
+        <span class="muted small">Positions are valued at the bid/ask mid-price. Selling fills at the bid.</span>
+      </div>
+      <div id="activeTable"></div>
+    </section>
+
+    <!-- History -->
+    <section class="tabpane" id="tab-history">
+      <div id="historyBreakdown"></div>
+      <div class="toolbar"><input id="historySearch" type="search" placeholder="Filter history…"></div>
+      <div id="historyTable"></div>
+    </section>
+
+    <!-- Compare -->
+    <section class="tabpane" id="tab-compare">
+      <div id="compareCards" class="compare-cards"></div>
+      <div class="toolbar">
+        <input id="compareSearch" type="search" placeholder="Filter races…">
+        <select id="compareChamber">
+          <option value="">All races</option>
+          <option>Control</option><option>Senate</option><option>House</option><option>Governor</option>
+        </select>
+      </div>
+      <div id="compareTable"></div>
+    </section>
+
+    <!-- Portfolios -->
+    <section class="tabpane" id="tab-portfolios">
+      <div class="grid2">
+        <div class="panel">
+          <h2>Your portfolios</h2>
+          <div id="portfolioList"></div>
+        </div>
+        <div class="panel">
+          <h2>New portfolio</h2>
+          <form id="newPortfolio" class="stack">
+            <label>Name <input name="name" required maxlength="80" placeholder="My hunches"></label>
+            <label>Description <input name="description" placeholder="Optional"></label>
+            <label>Starting balance ($) <input name="starting_balance" type="number" min="1" step="1" value="10000" required></label>
+            <button class="btn">Create portfolio</button>
+          </form>
+          <h2 class="mt">Scenarios</h2>
+          <p class="muted small">Re-run a scenario at current prices. This wipes its existing bets and history.</p>
+          <div class="stack-row">
+            <label>Stake per race ($) <input id="scenarioStake" type="number" min="1" value="100"></label>
+            <button class="btn dem" data-reset="all-dem">Reset All-Dem</button>
+            <button class="btn gop" data-reset="all-gop">Reset All-GOP</button>
+          </div>
+          <button id="rediscover" class="btn ghost mt">Re-scan Kalshi for midterm markets</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Bet modal -->
+  <dialog id="betDialog">
+    <form method="dialog" id="betForm" class="stack">
+      <div class="dialog-head">
+        <div>
+          <div class="muted small" id="betEvent"></div>
+          <h3 id="betTitle"></h3>
+        </div>
+        <button value="cancel" class="x" aria-label="Close">×</button>
+      </div>
+      <div class="seg wide" id="betSide">
+        <button type="button" data-side="yes" class="active">Buy YES</button>
+        <button type="button" data-side="no">Buy NO</button>
+      </div>
+      <label>Portfolio <select name="portfolio" id="betPortfolio"></select></label>
+      <div class="row2">
+        <label>Amount
+          <div class="input-addon">
+            <input name="amount" id="betAmount" type="number" min="0.01" step="0.01" value="100">
+            <select id="betUnit"><option value="dollars">$</option><option value="contracts">contracts</option></select>
+          </div>
+        </label>
+      </div>
+      <div id="betQuote" class="quote"></div>
+      <div id="betError" class="error"></div>
+      <div class="dialog-actions">
+        <button value="cancel" class="btn ghost">Cancel</button>
+        <button id="betSubmit" value="default" class="btn">Place paper bet</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

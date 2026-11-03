@@ -1,0 +1,21 @@
+[project]
+name = "gambles"
+version = "0.1.0"
+description = "Paper-trade live Kalshi prediction markets from a localhost dashboard"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "cryptography>=50.0.2",
+    "fastapi>=0.162.0",
+    "httpx>=0.28.1",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
