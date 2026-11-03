@@ -12,8 +12,12 @@ reads public market data and never places orders.
 - **Paper betting**: buy YES or NO by dollars or by contracts. Orders fill at the live ask, and the
   preview shows cost, Kalshi's fee, payout if the bet wins, and the loss if it doesn't.
 - **Active Bets**: positions valued at the bid/ask mid-price, with unrealized P/L, the payout if each
-  bet wins, and one-click early **Sell** at the live bid. **Click any bet to expand its price chart**
-  (1D / 1W / 1M / All, from Kalshi's price history), which marks your entry price and when you placed the bet.
+  bet wins, and one-click early **Sell** at the live bid.
+- **Price charts everywhere**: click any active or past bet, or the 📈 button on any market, to see its
+  YES and NO price lines over 1D / 1W / 1M / All, from Kalshi's price history. Charts mark your entry
+  and exit prices and when you placed and closed the bet. Kalshi's API doesn't expose market colors,
+  so Democrat markets draw YES in blue and NO in red, and Republican markets the reverse. Other markets
+  get a color pair seeded from their ticker, so each market keeps the same colors.
 - **History & Breakdown**: wins, losses and early sales, win rate, gross winnings and losses, biggest
   win and loss, and P/L split by race type, party and category.
 - **Automatic settlement**: a background loop refreshes prices every 60 seconds. When Kalshi finalizes

@@ -272,6 +272,18 @@ tr.expand-row > td, tr.expand-row:hover > td { background: var(--panel-2); paddi
 .chart .ref-label { font-size: 11px; font-weight: 600; }
 .chart .hover-dot { stroke: var(--panel); stroke-width: 1.5; }
 @media (max-width: 760px) { .bet-detail-body { grid-template-columns: 1fr; } }
+.bet-detail-head .legend { flex-wrap: wrap; align-items: center; }
+.bet-detail-head .legend i { width: 14px; height: 3px; }
+
+/* market-card charts (Available Bets) */
+.race.wide { grid-column: 1 / -1; }
+.quote-line { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.linkish {
+  font: inherit; font-size: 12px; font-weight: 600; color: var(--accent); background: none; border: 0;
+  padding: 0; cursor: pointer; white-space: nowrap;
+}
+.linkish:hover { text-decoration: underline; }
+.mkt-chart { grid-column: 1 / -1; margin-top: 6px; background: var(--panel-2); border-radius: 8px; padding: 12px; }
 
 @media (max-width: 640px) {
   main { padding: 14px 16px 50px; }

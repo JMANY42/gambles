@@ -69,8 +69,10 @@ const S = {
   compare: null,
   sort: {},
   bet: null,
-  expanded: new Set(),   // open-bet ids whose detail row is expanded
-  betRange: {},          // bet id -> chart range (1d/1w/1m/all)
+  // Expanded price charts, keyed "a:<betId>" (active), "h:<betId>" (history), "m:<ticker>" (market).
+  expanded: new Set(),
+  chartSpecs: {},        // chart key -> what to draw (ticker, party, side, entry...)
+  chartRange: {},        // chart key -> 1d/1w/1m/all
   hist: {},              // "TICKER|range" -> {at, data} price-history cache
 };
 const savedPid = () => { try { return Number(localStorage.getItem("gambles.pid")) || null; } catch { return null; } };
@@ -156,14 +158,23 @@ function lineChart(el, series, { height = 200, fmt = money, axisFmt = null, hlin
   const xl = [x0, (x0 + x1) / 2, x1].map((t, i) => `<text x="${X(t)}" y="${h - 4}" text-anchor="${["start", "middle", "end"][i]}">${fmtDate(new Date(t).toISOString())}</text>`);
   const paths = series.map((s) => {
     const d = s.points.map((p, i) => `${i ? "L" : "M"}${X(p.t).toFixed(1)},${Y(p.v).toFixed(1)}`).join("");
-    return `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round"/>`;
+    return `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="${s.width ?? 2}" stroke-opacity="${s.opacity ?? 1}" stroke-linejoin="round"/>`;
   });
   const base = series.find((s) => s.baseline != null)?.baseline;
   const refs = [...hlines];
   if (base != null) refs.push({ v: base, color: "var(--muted)" });
-  const refLines = refs.filter((l) => l.v >= y0 && l.v <= y1).map((l) =>
-    `<line x1="${padL}" x2="${w - padR}" y1="${Y(l.v)}" y2="${Y(l.v)}" stroke="${l.color || "var(--muted)"}" stroke-dasharray="4 4" opacity=".8"/>` +
-    (l.label ? `<text class="ref-label" x="${padL + 6}" y="${Y(l.v) - 5}" fill="${l.color || "var(--muted)"}">${esc(l.label)}</text>` : "")).join("");
+  // Labels sit just above their line; if that would collide with the previous label
+  // (lines a few cents apart), drop it just below its line instead.
+  let lastLabelY = -Infinity;
+  const refLines = refs.filter((l) => l.v >= y0 && l.v <= y1).sort((a, b) => Y(a.v) - Y(b.v)).map((l) => {
+    let ly = Y(l.v) - 5;
+    if (l.label) {
+      if (ly - lastLabelY < 13) ly = Math.max(Y(l.v) + 13, lastLabelY + 13);
+      lastLabelY = ly;
+    }
+    return `<line x1="${padL}" x2="${w - padR}" y1="${Y(l.v)}" y2="${Y(l.v)}" stroke="${l.color || "var(--muted)"}" stroke-dasharray="4 4" opacity=".8"/>` +
+      (l.label ? `<text class="ref-label" x="${padL + 6}" y="${ly}" fill="${l.color || "var(--muted)"}">${esc(l.label)}</text>` : "");
+  }).join("");
   const markerLines = markers.filter((m) => m.t >= x0 && m.t <= x1).map((m) =>
     `<line x1="${X(m.t)}" x2="${X(m.t)}" y1="${padT}" y2="${h - padB}" stroke="var(--muted)" stroke-dasharray="2 3"/>` +
     `<circle cx="${X(m.t)}" cy="${padT}" r="3" fill="var(--muted)"/>` +
@@ -281,6 +292,7 @@ function marketRow(m, owned) {
   const noAsk = m.no_ask > 0 && m.no_ask < 1 ? m.no_ask : null;
   const p = m.last_price ?? yesAsk;
   const mine = owned[m.ticker];
+  const open = S.expanded.has(`m:${m.ticker}`);
   return `<div class="mkt">
     <div class="who">${partyChip(m.party)}<span class="name" title="${esc(m.yes_sub_title || m.title)}">${esc(m.yes_sub_title || m.title || m.ticker)}</span>
       ${mine ? `<span class="owned">● ${mine.reduce((a, b) => a + b.contracts, 0)} ${esc(mine[0].side.toUpperCase())}</span>` : ""}</div>
@@ -288,9 +300,15 @@ function marketRow(m, owned) {
       <button class="btn sm yes" data-bet="${esc(m.ticker)}" data-side="yes" ${yesAsk ? "" : "disabled"}>Yes ${cents(yesAsk)}</button>
       <button class="btn sm no" data-bet="${esc(m.ticker)}" data-side="no" ${noAsk ? "" : "disabled"}>No ${cents(noAsk)}</button></div>
     <div class="bar ${esc(m.party || "")}"><i style="width:${Math.max(0, Math.min(100, (p || 0) * 100))}%"></i></div>
-    <div class="quote-line">Yes ${cents(m.yes_bid)} bid / ${cents(m.yes_ask)} ask · vol ${m.volume != null ? Math.round(m.volume).toLocaleString() : "—"} · <span class="mono">${esc(m.ticker)}</span></div>
+    <div class="quote-line">
+      <span>Yes ${cents(m.yes_bid)} bid / ${cents(m.yes_ask)} ask · vol ${m.volume != null ? Math.round(m.volume).toLocaleString() : "—"} · <span class="mono">${esc(m.ticker)}</span></span>
+      <button type="button" class="linkish" data-mchart="${esc(m.ticker)}" aria-expanded="${open}">📈 ${open ? "Hide chart" : "Chart"}</button>
+    </div>
+    ${open ? `<div class="mkt-chart">${chartBlock(`m:${m.ticker}`, marketSpec(m, owned))}</div>` : ""}
   </div>`;
 }
+
+const raceIsWide = (markets) => markets.some((m) => S.expanded.has(`m:${m.ticker}`));
 
 function renderMarkets() {
   const q = $("#marketSearch").value.trim().toLowerCase();
@@ -315,7 +333,7 @@ function renderMarkets() {
     list.innerHTML = `<div class="race-grid">${races.map((r) => {
       const ms = [...r.markets].sort((a, b) => (b.last_price ?? 0) - (a.last_price ?? 0));
       const settled = ms.find((m) => m.result === "yes");
-      return `<div class="race">
+      return `<div class="race ${raceIsWide(ms) ? "wide" : ""}">
         <div class="race-head"><div><div class="t">${esc(raceLabel(r))}</div><div class="meta">${esc(r.title)}</div></div>
           <span class="chip">${esc(r.chamber)}</span></div>
         ${settled ? `<div class="chip won">Settled: ${esc(settled.yes_sub_title)}</div>` : ""}
@@ -331,13 +349,14 @@ function renderMarkets() {
       .filter((e) => !catSel.value || e.category === catSel.value)
       .filter((e) => !q || [e.title, e.sub_title, e.event_ticker, ...e.markets.map((m) => m.yes_sub_title)].join(" ").toLowerCase().includes(q));
     if (!evs.length) { list.innerHTML = `<div class="empty">${S.allEvents.length ? "No events match. Try loading more." : "Loading…"}</div>`; return; }
-    list.innerHTML = `<div class="race-grid">${evs.map((e) => `<div class="race">
+    list.innerHTML = `<div class="race-grid">${evs.map((e) => `<div class="race ${raceIsWide(e.markets.slice(0, 8)) ? "wide" : ""}">
         <div class="race-head"><div><div class="t">${esc(e.title)}</div><div class="meta">${esc(e.sub_title || "")}</div></div>
           <span class="chip">${esc(e.category || "")}</span></div>
         ${e.markets.slice(0, 8).map((m) => marketRow(m, owned)).join("")}
         ${e.markets.length > 8 ? `<div class="muted small">+${e.markets.length - 8} more markets. Use ticker lookup.</div>` : ""}
       </div>`).join("")}</div>`;
   }
+  drawVisibleCharts(list);
 }
 
 const betTitle = (b) => `<div>${partyChip(b.party)} <b>${esc(b.yes_sub_title || b.market_title || b.market_ticker)}</b></div>
@@ -363,38 +382,174 @@ function renderActive() {
     empty: "No active bets. Pick something from Available Bets.",
     foot: rows.length ? [`${rows.length} position${rows.length === 1 ? "" : "s"}`, "", "", "", "", money(sum("cost") + sum("entry_fee")), money(sum("market_value")), pnl(sum("unrealized_pnl")), pnl(sum("max_profit")), "", ""] : null,
     expand: {
-      id: (b) => String(b.id),
-      isOpen: (id) => S.expanded.has(Number(id)),
-      render: betDetailHtml,
-      toggle: (id) => {
-        id = Number(id);
-        S.expanded.has(id) ? S.expanded.delete(id) : S.expanded.add(id);
-        renderActive();
-      },
+      id: (b) => `a:${b.id}`,
+      isOpen: (key) => S.expanded.has(key),
+      render: (b) => chartBlock(`a:${b.id}`, activeSpec(b)),
+      toggle: (key) => { toggleChart(key); renderActive(); },
     },
   });
-  // Forget expansions for bets that are no longer open, then draw the visible charts.
-  for (const id of S.expanded) if (!S.open.some((b) => b.id === id)) S.expanded.delete(id);
-  rows.filter((b) => S.expanded.has(b.id)).forEach(drawBetChart);
+  drawVisibleCharts($("#activeTable"));
 }
 
-// ---------- per-bet price history ----------
+// ---------- price-history charts (shared by Available / Active / History) ----------
 const RANGES = [["1d", "1D"], ["1w", "1W"], ["1m", "1M"], ["all", "All"]];
 const HIST_TTL_MS = 60_000;
 
-function betDetailHtml(b) {
-  const range = S.betRange[b.id] || "1w";
-  return `<div class="bet-detail" data-detail="${b.id}">
+// Kalshi's API exposes no market colors, so: party colors for D/R/I markets, and for
+// everything else a pair picked from this palette by hashing the ticker (stable per market).
+// The palette avoids pure red/blue so generic markets never read as partisan.
+const GENERIC_PALETTE = [
+  ["#0d9488", "#f59e0b"], ["#7c3aed", "#ea580c"], ["#db2777", "#0891b2"], ["#65a30d", "#9333ea"],
+  ["#d97706", "#0e7490"], ["#84cc16", "#8b5cf6"], ["#16a34a", "#c026d3"], ["#ca8a04", "#4f46e5"],
+];
+function hashStr(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+function lineColors(party, ticker) {
+  if (party === "D") return { yes: "var(--dem)", no: "var(--gop)" };
+  if (party === "R") return { yes: "var(--gop)", no: "var(--dem)" };
+  if (party === "I") return { yes: "var(--ind)", no: "var(--muted)" };
+  const [yes, no] = GENERIC_PALETTE[hashStr(ticker || "") % GENERIC_PALETTE.length];
+  return { yes, no };
+}
+
+const signedCents = (d) => (d == null ? "—" : `${d >= 0 ? "+" : "−"}${cents(Math.abs(d))}`);
+const rangeStats = (pts) => {
+  const vs = pts.map((p) => p.v);
+  return vs.length ? { high: Math.max(...vs), low: Math.min(...vs), chg: vs.at(-1) - vs[0] } : { high: null, low: null, chg: null };
+};
+const kv = (pairs) => `<div class="kv">${pairs.map(([k, v]) => `<div>${k}</div><div class="num">${v}</div>`).join("")}</div>`;
+
+// Register what a chart shows and return its container markup. Drawn later by drawChart(key).
+function chartBlock(key, spec) {
+  S.chartSpecs[key] = spec;
+  const range = S.chartRange[key] || "1w";
+  const c = lineColors(spec.party, spec.ticker);
+  const tag = (side) => (spec.side === side ? ' <span class="muted">(your side)</span>' : "");
+  return `<div class="bet-detail" data-chart="${esc(key)}">
     <div class="bet-detail-head">
-      <div><b>${esc(b.side.toUpperCase())} price</b> <span class="muted small">· ${esc(b.market_ticker)}</span></div>
+      <div class="legend">
+        <span><i style="background:${c.yes}"></i>Yes · ${esc(spec.label || spec.ticker)}${tag("yes")}</span>
+        <span><i style="background:${c.no}"></i>No${tag("no")}</span>
+        <span class="mono">${esc(spec.ticker)}</span>
+      </div>
       <div class="seg sm" role="group" aria-label="Chart range">${RANGES.map(([k, l]) =>
-        `<button type="button" data-range="${k}" data-range-bet="${b.id}" class="${k === range ? "active" : ""}">${l}</button>`).join("")}</div>
+        `<button type="button" data-range="${k}" data-chart-range="${esc(key)}" class="${k === range ? "active" : ""}">${l}</button>`).join("")}</div>
     </div>
     <div class="bet-detail-body">
       <div class="chart bet-chart"><div class="empty">Loading price history…</div></div>
       <div class="bet-stats"></div>
     </div>
   </div>`;
+}
+
+async function drawChart(key) {
+  const spec = S.chartSpecs[key];
+  if (!spec) return;
+  const range = S.chartRange[key] || "1w";
+  const box = () => document.querySelector(`[data-chart="${CSS.escape(key)}"]`);
+  let data;
+  try { data = await fetchHistory(spec.ticker, range); }
+  catch (e) { const el = box(); if (el) $(".bet-chart", el).innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  const el = box();
+  if (!el || (S.chartRange[key] || "1w") !== range) return; // collapsed, or range changed meanwhile
+
+  const yes = data.points.map((p) => ({ t: p.t * 1000, v: p.yes }));
+  if (spec.liveYes != null) yes.push({ t: Date.now(), v: spec.liveYes }); // end the line at "now"
+  const no = yes.map((p) => ({ t: p.t, v: Math.round((1 - p.v) * 10000) / 10000 }));
+  const c = lineColors(spec.party, spec.ticker);
+  // Emphasise the side you hold; with no position both lines are equal weight.
+  const weight = (side) => (!spec.side || spec.side === side ? { width: 2.25, opacity: 1 } : { width: 1.5, opacity: 0.55 });
+  const hlines = [];
+  if (spec.entry != null) hlines.push({ v: spec.entry, label: `Your entry ${cents(spec.entry)} (${spec.side.toUpperCase()})`, color: "var(--accent)" });
+  if (spec.exit != null) hlines.push({ v: spec.exit, label: `Exit ${cents(spec.exit)}`, color: "var(--muted)" });
+  const markers = [];
+  if (spec.placedAt) markers.push({ t: new Date(spec.placedAt).getTime(), label: "Bet placed" });
+  if (spec.closedAt) markers.push({ t: new Date(spec.closedAt).getTime(), label: "Closed" });
+
+  lineChart($(".bet-chart", el), [
+    { name: "Yes", color: c.yes, points: yes, ...weight("yes") },
+    { name: "No", color: c.no, points: no, ...weight("no") },
+  ], {
+    height: 220, fmt: cents, axisFmt: cents, yMin: 0, yMax: 1, hlines, markers,
+    emptyMsg: "Kalshi has no trades for this market in this range yet.",
+  });
+  $(".bet-stats", el).innerHTML = spec.stats ? spec.stats({ yes, no }) : "";
+}
+
+// --- chart specs per context ---
+function activeSpec(b) {
+  const liveYes = b.mark_price == null ? null : b.side === "yes" ? b.mark_price : 1 - b.mark_price;
+  return {
+    ticker: b.market_ticker, party: b.party, label: b.yes_sub_title || b.market_title,
+    side: b.side, entry: b.entry_price, placedAt: b.placed_at, liveYes,
+    stats: ({ yes, no }) => {
+      const r = rangeStats(b.side === "yes" ? yes : no);
+      const since = b.mark_price != null ? b.mark_price - b.entry_price : null;
+      return kv([
+        ["Your entry", cents(b.entry_price)],
+        ["Now", cents(b.mark_price)],
+        ["Since entry", `<span class="${pnlCls(since)}">${signedCents(since)}</span>`],
+        ["Range change", `<span class="${pnlCls(r.chg)}">${signedCents(r.chg)}</span>`],
+        ["Range high / low", `${cents(r.high)} / ${cents(r.low)}`],
+        ["Implied odds now", prob(b.mark_price)],
+        ["Position P/L", pnl(b.unrealized_pnl)],
+      ]);
+    },
+  };
+}
+
+function historySpec(b) {
+  const staked = b.cost + b.entry_fee;
+  return {
+    ticker: b.market_ticker, party: b.party, label: b.yes_sub_title || b.market_title,
+    side: b.side, entry: b.entry_price, exit: b.exit_price, placedAt: b.placed_at, closedAt: b.closed_at,
+    stats: ({ yes, no }) => {
+      const r = rangeStats(b.side === "yes" ? yes : no);
+      return kv([
+        ["Outcome", `<span class="chip ${b.status}">${b.status.toUpperCase()}</span>`],
+        ["Entry → exit", `${cents(b.entry_price)} → ${cents(b.exit_price)}`],
+        ["Staked", money(staked)],
+        ["Returned", money(b.proceeds - b.exit_fee)],
+        ["P/L", pnl(b.pnl)],
+        ["Return", `<span class="${pnlCls(b.pnl)}">${staked ? pct((b.pnl / staked) * 100) : "—"}</span>`],
+        ["Range high / low", `${cents(r.high)} / ${cents(r.low)}`],
+      ]);
+    },
+  };
+}
+
+function marketSpec(m, owned) {
+  const bid = m.yes_bid > 0 ? m.yes_bid : null, ask = m.yes_ask > 0 && m.yes_ask < 1 ? m.yes_ask : null;
+  const liveYes = m.result === "yes" ? 1 : m.result === "no" ? 0 : bid != null && ask != null ? (bid + ask) / 2 : m.last_price;
+  const mine = (owned || {})[m.ticker]?.[0]; // show your entry if you hold it
+  return {
+    ticker: m.ticker, party: m.party, label: m.yes_sub_title || m.title, liveYes,
+    side: mine?.side, entry: mine?.entry_price, placedAt: mine?.placed_at,
+    stats: ({ yes }) => {
+      const r = rangeStats(yes);
+      return kv([
+        ["Yes now", `${cents(liveYes)} <span class="muted small">(${prob(liveYes)})</span>`],
+        ["No now", cents(liveYes == null ? null : 1 - liveYes)],
+        ["Yes bid / ask", `${cents(m.yes_bid)} / ${cents(m.yes_ask)}`],
+        ["Range change (Yes)", `<span class="${pnlCls(r.chg)}">${signedCents(r.chg)}</span>`],
+        ["Range high / low", `${cents(r.high)} / ${cents(r.low)}`],
+        ["Volume", m.volume != null ? Math.round(m.volume).toLocaleString() : "—"],
+        ...(mine ? [["Your position", `${mine.contracts} ${mine.side.toUpperCase()} @ ${cents(mine.entry_price)}`]] : []),
+      ]);
+    },
+  };
+}
+
+// Draw every expanded chart currently in the DOM.
+function drawVisibleCharts(root = document) {
+  $$("[data-chart]", root).forEach((el) => drawChart(el.dataset.chart));
+}
+
+function toggleChart(key) {
+  S.expanded.has(key) ? S.expanded.delete(key) : S.expanded.add(key);
 }
 
 async function fetchHistory(ticker, range) {
@@ -405,56 +560,25 @@ async function fetchHistory(ticker, range) {
   return data;
 }
 
-async function drawBetChart(b) {
-  const range = S.betRange[b.id] || "1w";
-  const box = () => document.querySelector(`[data-detail="${b.id}"]`);
-  let data;
-  try { data = await fetchHistory(b.market_ticker, range); }
-  catch (e) { const el = box(); if (el) $(".bet-chart", el).innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
-  const el = box();
-  if (!el || (S.betRange[b.id] || "1w") !== range) return; // collapsed or range changed meanwhile
-
-  const toSide = (yes) => (b.side === "yes" ? yes : 1 - yes);
-  const points = data.points.map((p) => ({ t: p.t * 1000, v: toSide(p.yes) }));
-  if (b.mark_price != null) points.push({ t: Date.now(), v: b.mark_price }); // end the line at "now"
-  const color = b.side === "yes" ? "var(--pos)" : "var(--neg)";
-  lineChart($(".bet-chart", el), [{ name: `${b.side.toUpperCase()} price`, color, points }], {
-    height: 220,
-    fmt: cents,
-    axisFmt: cents,
-    yMin: 0, yMax: 1,
-    hlines: [{ v: b.entry_price, label: `Your entry ${cents(b.entry_price)}`, color: "var(--accent)" }],
-    markers: [{ t: new Date(b.placed_at).getTime(), label: "Bet placed" }],
-    emptyMsg: "Kalshi has no trades for this market in this range yet.",
-  });
-
-  const vs = points.map((p) => p.v);
-  const chg = points.length ? points.at(-1).v - points[0].v : null;
-  const sinceEntry = b.mark_price != null ? b.mark_price - b.entry_price : null;
-  const signed = (d) => (d == null ? "—" : `${d >= 0 ? "+" : "−"}${cents(Math.abs(d))}`);
-  $(".bet-stats", el).innerHTML = `<div class="kv">
-    <div>Your entry</div><div class="num">${cents(b.entry_price)}</div>
-    <div>Now</div><div class="num">${cents(b.mark_price)}</div>
-    <div>Since entry</div><div class="num ${pnlCls(sinceEntry)}">${signed(sinceEntry)}</div>
-    <div>Range change</div><div class="num ${pnlCls(chg)}">${signed(chg)}</div>
-    <div>Range high</div><div class="num">${vs.length ? cents(Math.max(...vs)) : "—"}</div>
-    <div>Range low</div><div class="num">${vs.length ? cents(Math.min(...vs)) : "—"}</div>
-    <div>Implied odds now</div><div class="num">${prob(b.mark_price)}</div>
-    <div>Position P/L</div><div class="num">${pnl(b.unrealized_pnl)}</div>
-  </div>`;
-}
-
+// Range buttons on any chart.
 document.addEventListener("click", (e) => {
-  const btn = e.target.closest("[data-range-bet]");
+  const btn = e.target.closest("[data-chart-range]");
   if (!btn) return;
-  const id = Number(btn.dataset.rangeBet);
-  S.betRange[id] = btn.dataset.range;
-  const el = document.querySelector(`[data-detail="${id}"]`);
-  const b = S.open.find((x) => x.id === id);
-  if (!el || !b) return;
+  const key = btn.dataset.chartRange;
+  S.chartRange[key] = btn.dataset.range;
+  const el = document.querySelector(`[data-chart="${CSS.escape(key)}"]`);
+  if (!el) return;
   $$("[data-range]", el).forEach((x) => x.classList.toggle("active", x === btn));
   $(".bet-chart", el).innerHTML = '<div class="empty">Loading price history…</div>';
-  drawBetChart(b);
+  drawChart(key);
+});
+
+// Chart toggles on market cards (Available Bets).
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-mchart]");
+  if (!btn) return;
+  toggleChart(`m:${btn.dataset.mchart}`);
+  renderMarkets();
 });
 
 function groupTable(title, groups, labeler = (g) => esc(g)) {
@@ -504,8 +628,15 @@ function renderHistory() {
     { key: "closed_at", label: "Closed", render: (b) => `<span class="small muted">${fmtDate(b.closed_at)}</span>` },
   ], rows, {
     empty: "No closed bets yet. Bets show up here when their market settles or you sell.",
-    foot: rows.length ? [`${rows.length} bets`, "", "", "", "", "", money(rows.reduce((a, b) => a + b.cost + b.entry_fee, 0)), money(rows.reduce((a, b) => a + b.proceeds - b.exit_fee, 0)), pnl(rows.reduce((a, b) => a + b.pnl, 0)), ""] : null,
+    foot: rows.length ? [`${rows.length} bet${rows.length === 1 ? "" : "s"}`, "", "", "", "", "", money(rows.reduce((a, b) => a + b.cost + b.entry_fee, 0)), money(rows.reduce((a, b) => a + b.proceeds - b.exit_fee, 0)), pnl(rows.reduce((a, b) => a + b.pnl, 0)), ""] : null,
+    expand: {
+      id: (b) => `h:${b.id}`,
+      isOpen: (key) => S.expanded.has(key),
+      render: (b) => chartBlock(`h:${b.id}`, historySpec(b)),
+      toggle: (key) => { toggleChart(key); renderHistory(); },
+    },
   });
+  drawVisibleCharts($("#historyTable"));
 }
 
 function renderCompare() {
@@ -745,7 +876,7 @@ $("#rediscover").addEventListener("click", async () => {
 
 window.addEventListener("resize", () => {
   renderChart();
-  S.open.filter((b) => S.expanded.has(b.id)).forEach(drawBetChart);
+  drawVisibleCharts();
 });
 
 // ---------- boot ----------
