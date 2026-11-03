@@ -32,6 +32,7 @@ class State:
         self.last_snapshot = 0.0
         self.last_error: str | None = None
         self.settled_count = 0
+        self.job_label: str | None = None
 
 
 state = State()
@@ -51,25 +52,44 @@ def _catalog_stale() -> bool:
 
 async def run_catalog_refresh(seed: bool = True) -> dict[str, Any]:
     assert state.client
+    state.job_label = "scanning Kalshi…"
     summary = await catalog.discover_midterms(state.client)
     if seed:
-        await asyncio.to_thread(scenarios.seed_all)
+        await run_seed()
     return summary
 
 
-def start_catalog_refresh(seed: bool = True) -> bool:
-    if state.catalog_task and not state.catalog_task.done():
+async def run_seed(**kwargs: Any) -> list[dict[str, Any]]:
+    """Create missing scenario portfolios (backdated ones need ~1 min of history fetching)."""
+    assert state.client
+    state.job_label = "building scenario portfolios…"
+    return await scenarios.seed_all(state.client, **kwargs)
+
+
+def job_running() -> bool:
+    return bool(state.catalog_task and not state.catalog_task.done())
+
+
+def start_job(make_coro) -> bool:
+    """Run one long background job at a time (price refresh pauses while it runs)."""
+    if job_running():
         return False
 
     async def runner() -> None:
         try:
-            await run_catalog_refresh(seed)
+            await make_coro()
         except Exception as exc:
-            state.last_error = f"catalog: {exc}"
-            log.exception("Catalog refresh failed")
+            state.last_error = f"job: {exc}"
+            log.exception("Background job failed")
+        finally:
+            state.job_label = None
 
     state.catalog_task = asyncio.create_task(runner())
     return True
+
+
+def start_catalog_refresh(seed: bool = True) -> bool:
+    return start_job(lambda: run_catalog_refresh(seed))
 
 
 async def refresh_prices_and_settle() -> dict[str, Any]:
@@ -104,7 +124,9 @@ async def background_loop() -> None:
         try:
             if _catalog_stale():
                 start_catalog_refresh()
-            if not (state.catalog_task and not state.catalog_task.done()):
+            elif not job_running() and set(scenarios.SCENARIOS) - scenarios.existing_slugs():
+                start_job(run_seed)  # e.g. new scenario variants added since the last run
+            if not job_running():
                 await refresh_prices_and_settle()
                 if (state.last_error or "").startswith("prices"):
                     state.last_error = None
@@ -142,7 +164,8 @@ def status() -> dict[str, Any]:
     return {
         "authenticated": bool(state.client and state.client.authenticated),
         "catalog": db.get_meta("catalog"),
-        "catalog_refreshing": bool(state.catalog_task and not state.catalog_task.done()),
+        "catalog_refreshing": job_running(),
+        "job_label": state.job_label if job_running() else None,
         "last_price_refresh": state.last_price_refresh,
         "price_refresh_seconds": settings.price_refresh_seconds,
         "simulate_fees": settings.simulate_fees,
@@ -353,32 +376,69 @@ async def sell(bet_id: int) -> dict[str, Any]:
 # --- scenarios ----------------------------------------------------------------
 
 @app.post("/api/scenarios/{slug}/reset")
-def reset_scenario(slug: str, stake: float | None = None) -> dict[str, Any]:
+async def reset_scenario(slug: str, stake: float | None = None) -> dict[str, Any]:
     if slug not in scenarios.SCENARIOS:
         raise HTTPException(404, "Unknown scenario")
+    sc = scenarios.SCENARIOS[slug]
     try:
-        return scenarios.seed_scenario(slug, stake=stake, reset=True)
+        if not sc.days_ago:
+            return scenarios.seed_scenario(slug, stake=stake, reset=True)
+        # Backdated: needs a price-history fetch (~30-60s), so run it in the background.
+        if not start_job(lambda: run_seed(reset=True, slugs=[slug], stake=stake)):
+            raise HTTPException(409, "Another background job is running; try again shortly")
+        return {"slug": slug, "status": "started", "bets_placed": None, "skipped": []}
     except sim.BetError as exc:
         raise HTTPException(400, str(exc))
 
 
-@app.get("/api/compare")
-def compare() -> dict[str, Any]:
+def _party_key(slug: str) -> str:
+    return "all-dem" if slug.startswith("all-dem") else "all-gop"
+
+
+@app.get("/api/scenarios")
+def list_scenarios() -> list[dict[str, Any]]:
+    """Headline numbers for every scenario variant (for the comparison matrix)."""
+    out = []
     with db.tx() as conn:
-        pfs = db.rows(conn, "SELECT * FROM portfolios WHERE slug IN ('all-dem', 'all-gop') ORDER BY slug")
-        out: dict[str, Any] = {"scenarios": [], "races": []}
+        by_slug = {p["slug"]: p for p in db.rows(conn, "SELECT * FROM portfolios")}
+        for slug, sc in scenarios.SCENARIOS.items():
+            p = by_slug.get(slug)
+            row = {"slug": slug, "party_key": _party_key(slug), "days_ago": sc.days_ago,
+                   "filtered": sc.min_prob is not None, "variant": scenarios.variant_suffix(sc.days_ago, sc.min_prob is not None),
+                   "name": sc.name, "ready": p is not None}
+            if p:
+                s = sim.portfolio_summary(conn, p["id"])
+                meta = db.get_meta(f"scenario:{slug}") or {}
+                row.update({k: s[k] for k in ("equity", "total_pnl", "total_return_pct", "starting_balance",
+                                              "positions_value", "unrealized_pnl", "realized_pnl",
+                                              "max_payout_if_all_win", "open_count")},
+                           portfolio_id=p["id"], staked=s["open_cost_basis"],
+                           bets=s["open_count"] + sum(s["counts"].values()),
+                           skipped=len(meta.get("skipped") or []), placed_at=meta.get("placed_at"))
+            out.append(row)
+    return out
+
+
+@app.get("/api/compare")
+def compare(v: str = Query("", pattern=r"^(-\d+d)?(-5pct)?$")) -> dict[str, Any]:
+    """Dem vs GOP for one variant; `v` is the slug suffix, e.g. '' (bought now), '-7d-5pct'."""
+    with db.tx() as conn:
+        pfs = db.rows(conn, "SELECT * FROM portfolios WHERE slug IN (?, ?) ORDER BY slug",
+                      (f"all-dem{v}", f"all-gop{v}"))
+        out: dict[str, Any] = {"variant": v, "scenarios": [], "races": []}
         race_rows: dict[str, dict[str, Any]] = {}
         for p in pfs:
             s = sim.portfolio_summary(conn, p["id"])
             s.pop("biggest_win"), s.pop("biggest_loss")
             s["meta"] = db.get_meta(f"scenario:{p['slug']}")
+            s["party_key"] = _party_key(p["slug"])
             out["scenarios"].append(s)
             for b in sim.list_bets(conn, p["id"], "open") + sim.list_bets(conn, p["id"], "closed"):
                 key = b["market_ticker"].rsplit("-", 1)[0]
                 r = race_rows.setdefault(key, {"race": b["event_title"], "chamber": b["chamber"],
                                                "state": b["state"], "district": b["district"]})
                 pnl = b["pnl"] if b["status"] != "open" else b.get("unrealized_pnl")
-                r[p["slug"]] = {"status": b["status"], "entry_price": b["entry_price"],
+                r[_party_key(p["slug"])] = {"status": b["status"], "entry_price": b["entry_price"],
                                 "mark": b.get("mark_price", b.get("exit_price")),
                                 "pnl": pnl, "contracts": b["contracts"]}
         out["races"] = sorted(race_rows.values(), key=lambda r: (r["chamber"] or "", r["state"] or "",

@@ -211,7 +211,7 @@ def test_scenarios_bet_one_side_per_race():
     mk_market("HOUSEPA17-26-D", party="D", yes_bid=0.96, yes_ask=0.98)
     mk_market("HOUSEPA17-26-R", party="R", yes_bid=0.02, yes_ask=0.03)
     mk_market("HOUSEPA17-26-I", party="I", yes_bid=0.0, yes_ask=0.01)
-    res = scenarios.seed_all()
+    res = [scenarios.seed_scenario(s) for s in ("all-dem", "all-gop")]
     assert [r["bets_placed"] for r in res] == [2, 2]
     with db.tx() as conn:
         dem = db.rows(conn, "SELECT b.*, m.party FROM bets b JOIN markets m ON m.ticker=b.market_ticker "
@@ -223,7 +223,7 @@ def test_scenarios_bet_one_side_per_race():
     # Each bet spends close to (but never over) the $100 stake.
     assert all(90 <= b["cost"] + b["entry_fee"] <= 100 for b in dem + gop)
     # Re-seeding without reset is a no-op.
-    assert all(r["status"] == "exists" for r in scenarios.seed_all())
+    assert all(scenarios.seed_scenario(s)["status"] == "exists" for s in ("all-dem", "all-gop"))
 
 
 def test_mark_price_falls_back_and_settles():

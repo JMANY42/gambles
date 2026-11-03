@@ -101,7 +101,9 @@ def get_portfolio(conn: sqlite3.Connection, portfolio_id: int) -> dict[str, Any]
 
 def place_bet(conn: sqlite3.Connection, portfolio_id: int, market: dict[str, Any], side: str,
               contracts: int | None = None, dollars: float | None = None,
-              note: str | None = None) -> dict[str, Any]:
+              note: str | None = None, placed_at: str | None = None) -> dict[str, Any]:
+    """Buy at the market's current ask. `placed_at` backdates the bet (backtests pass a
+    market dict whose quotes are the historical quotes at that time)."""
     side = side.lower()
     if side not in ("yes", "no"):
         raise BetError("side must be 'yes' or 'no'")
@@ -129,7 +131,7 @@ def place_bet(conn: sqlite3.Connection, portfolio_id: int, market: dict[str, Any
     cur = conn.execute(
         "INSERT INTO bets(portfolio_id, market_ticker, side, contracts, entry_price, cost, entry_fee, note, placed_at)"
         " VALUES (?,?,?,?,?,?,?,?,?)",
-        (portfolio_id, market["ticker"], side, contracts, ask, cost, fee, note, now_iso()),
+        (portfolio_id, market["ticker"], side, contracts, ask, cost, fee, note, placed_at or now_iso()),
     )
     return dict(conn.execute("SELECT * FROM bets WHERE id = ?", (cur.lastrowid,)).fetchone())
 

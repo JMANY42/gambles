@@ -275,6 +275,16 @@ tr.expand-row > td, tr.expand-row:hover > td { background: var(--panel-2); paddi
 .bet-detail-head .legend { flex-wrap: wrap; align-items: center; }
 .bet-detail-head .legend i { width: 14px; height: 3px; }
 
+/* scenario matrix + variant picker (Dem vs GOP tab) */
+#scenarioMatrix { margin-bottom: 14px; }
+.table-wrap.flat { border: 0; border-radius: 0; background: none; }
+.matrix tr.variant-row { cursor: pointer; }
+.matrix tr.variant-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.matrix tr.variant-row.selected td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.matrix tr.variant-row.selected td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+.variant-bar { margin-top: 4px; }
+.variant-picker { display: flex; gap: 10px; flex-wrap: wrap; }
+
 /* market-card charts (Available Bets) */
 .race.wide { grid-column: 1 / -1; }
 .quote-line { display: flex; justify-content: space-between; gap: 8px; align-items: center; }

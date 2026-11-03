@@ -27,15 +27,26 @@ reads public market data and never places orders.
 
 ### Built-in scenarios: 2026 midterms
 
-On first run the app scans Kalshi for every 2026 race and seeds two portfolios:
+On first run the app scans Kalshi for every 2026 race and builds **16 portfolios**. Each one buys YES
+on one party's side of every race, $100 per race:
 
-| Scenario | What it does |
-|---|---|
-| **All Democrats** | Buys YES on the Democratic side of every race, $100 per race at the live ask |
-| **All Republicans** | Buys YES on the Republican side of every race, $100 per race at the live ask |
+| | All races | Only races whose side *currently* has ≥5% odds |
+|---|---|---|
+| **Bought now** (live ask) | `all-dem`, `all-gop` | `all-dem-5pct`, `all-gop-5pct` |
+| **1 week ago** | `all-dem-7d`, `all-gop-7d` | `all-dem-7d-5pct`, `all-gop-7d-5pct` |
+| **2 weeks ago** | `all-dem-14d`, `all-gop-14d` | `all-dem-14d-5pct`, `all-gop-14d-5pct` |
+| **1 month ago** | `all-dem-30d`, `all-gop-30d` | `all-dem-30d-5pct`, `all-gop-30d-5pct` |
 
-The **Dem vs GOP** tab compares the two side by side, race by race. You can re-run either scenario at
-current prices, with a custom stake, from the **Portfolios** tab.
+**Backdated** portfolios fill at the ask Kalshi actually showed at that moment, from hourly price
+history, with Kalshi's fee at that price. Each bet is stamped with the past date. A race whose market
+wasn't listed yet, or had no offers then, is skipped and the reason is recorded. Each backdated
+portfolio's equity curve is backfilled from the same history, so its chart starts on the purchase date.
+All 16 share one history fetch, which takes about a minute.
+
+The **Dem vs GOP** tab shows every variant in one grid. Click a row to compare that Dem/GOP pair side by
+side, race by race, with a P/L-over-time chart. You can re-run the "bought now" scenarios at current
+prices, with a custom stake, from the **Portfolios** tab. Any scenario can be rebuilt with
+`POST /api/scenarios/{slug}/reset`.
 
 ## Quick start
 
@@ -78,7 +89,8 @@ app/
   kalshi.py      Read-only Kalshi v2 client (rate limiting, retries, optional request signing)
   catalog.py     Market normalization and 2026 midterm race discovery
   sim.py         Paper-trading engine: fills, fees, settlement, P/L, summaries
-  scenarios.py   All-Dem / All-GOP scenario seeding
+  scenarios.py   All-Dem / All-GOP scenario grid (timing x odds filter) and seeding
+  backtest.py    Backdated fills from Kalshi hourly history, equity-curve backfill
   db.py          SQLite schema and helpers (data/gambles.db)
   static/        Dashboard (plain HTML/CSS/JS, no build step)
 tests/           pytest suite (engine, catalog parsing, scenarios, settlement loop)

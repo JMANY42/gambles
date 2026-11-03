@@ -74,6 +74,8 @@ const S = {
   chartSpecs: {},        // chart key -> what to draw (ticker, party, side, entry...)
   chartRange: {},        // chart key -> 1d/1w/1m/all
   hist: {},              // "TICKER|range" -> {at, data} price-history cache
+  variant: (() => { try { return JSON.parse(localStorage.getItem("gambles.variant")) || { days: 0, filtered: false }; } catch { return { days: 0, filtered: false }; } })(),
+  scenarioList: [],
 };
 const savedPid = () => { try { return Number(localStorage.getItem("gambles.pid")) || null; } catch { return null; } };
 const savePid = (id) => { try { localStorage.setItem("gambles.pid", id); } catch {} };
@@ -220,7 +222,11 @@ async function loadPortfolios() {
     const saved = savedPid();
     S.pid = S.portfolios.some((p) => p.id === saved) ? saved : S.portfolios[0].id;
   }
-  sel.innerHTML = S.portfolios.map((p) => `<option value="${p.id}" ${p.id === S.pid ? "selected" : ""}>${esc(p.name)}</option>`).join("");
+  const opt = (p) => `<option value="${p.id}" ${p.id === S.pid ? "selected" : ""}>${esc(p.name)}</option>`;
+  const isScenario = (p) => /^all-(dem|gop)/.test(p.slug);
+  const mine = S.portfolios.filter((p) => !isScenario(p));
+  sel.innerHTML = `<optgroup label="Scenarios">${S.portfolios.filter(isScenario).map(opt).join("")}</optgroup>` +
+    (mine.length ? `<optgroup label="Your portfolios">${mine.map(opt).join("")}</optgroup>` : "");
   $("#betPortfolio").innerHTML = S.portfolios.map((p) => `<option value="${p.id}">${esc(p.name)} (${money(p.cash)} cash)</option>`).join("");
 }
 
@@ -241,13 +247,18 @@ async function loadMidterms() {
   S.catalog = d.catalog;
 }
 
-async function loadCompare() { S.compare = await api("/api/compare"); }
+async function loadCompare() {
+  [S.compare, S.scenarioList] = await Promise.all([
+    api(`/api/compare?v=${encodeURIComponent(variantSuffix(S.variant))}`),
+    api("/api/scenarios"),
+  ]);
+}
 
 async function loadStatus() {
   const st = await api("/api/status");
   const pill = $("#statusPill");
   const parts = [];
-  if (st.catalog_refreshing) parts.push("scanning Kalshi…");
+  if (st.catalog_refreshing) parts.push(st.job_label || "working…");
   parts.push(`prices ${ago(st.last_price_refresh)}`);
   if (st.authenticated) parts.push("API key ✓");
   pill.textContent = parts.join(" · ");
@@ -639,14 +650,76 @@ function renderHistory() {
   drawVisibleCharts($("#historyTable"));
 }
 
+// ---------- scenario variants (timing x filter) ----------
+const TIMING_LABELS = { 0: "Bought now", 7: "1 week ago", 14: "2 weeks ago", 30: "1 month ago" };
+const variantSuffix = ({ days, filtered }) => (days ? `-${days}d` : "") + (filtered ? "-5pct" : "");
+const variantLabel = ({ days, filtered }) => `${TIMING_LABELS[days]}${filtered ? " · ≥5% odds only" : " · all races"}`;
+
+function renderScenarioMatrix() {
+  const list = S.scenarioList || [];
+  const by = Object.fromEntries(list.map((s) => [s.slug, s]));
+  const cur = variantSuffix(S.variant);
+  const ret = (s) => (s?.ready ? `${pnl(s.total_pnl)} <span class="small ${pnlCls(s.total_pnl)}">${pct(s.total_return_pct)}</span>` : '<span class="muted small">building…</span>');
+  const rows = [];
+  for (const days of [0, 7, 14, 30]) for (const filtered of [false, true]) {
+    const v = variantSuffix({ days, filtered }), d = by[`all-dem${v}`], g = by[`all-gop${v}`];
+    const edge = d?.ready && g?.ready ? (d.total_pnl > g.total_pnl ? partyChip("D") : d.total_pnl < g.total_pnl ? partyChip("R") : "tie") : "";
+    rows.push(`<tr class="variant-row ${v === cur ? "selected" : ""}" data-variant-days="${days}" data-variant-filtered="${filtered}" tabindex="0">
+      <td><b>${TIMING_LABELS[days]}</b>${d?.placed_at && days ? ` <span class="muted small">(${fmtDate(d.placed_at)})</span>` : ""}</td>
+      <td>${filtered ? "≥5% odds only" : "All races"}</td>
+      <td class="num">${d?.ready ? d.bets : "—"}</td><td class="num">${ret(d)}</td>
+      <td class="num">${g?.ready ? g.bets : "—"}</td><td class="num">${ret(g)}</td>
+      <td class="num">${edge}</td></tr>`);
+  }
+  $("#scenarioMatrix").innerHTML = `<div class="panel"><div class="panel-head"><h2>All scenarios</h2>
+      <span class="muted small">$100 per race, YES on every candidate of one party. Click a row to compare it below.</span></div>
+    <div class="table-wrap flat"><table class="mini matrix"><thead><tr>
+      <th class="nosort">Timing</th><th class="nosort">Races</th>
+      <th class="nosort num">Dem bets</th><th class="nosort num">Dem P/L</th>
+      <th class="nosort num">GOP bets</th><th class="nosort num">GOP P/L</th><th class="nosort num">Ahead</th>
+    </tr></thead><tbody>${rows.join("")}</tbody></table></div></div>`;
+
+  $("#variantPicker").innerHTML = `<div class="seg" id="timingSeg">${[0, 7, 14, 30].map((d) =>
+      `<button type="button" data-days="${d}" class="${S.variant.days === d ? "active" : ""}">${TIMING_LABELS[d]}</button>`).join("")}</div>
+    <div class="seg" id="filterSeg">
+      <button type="button" data-filtered="false" class="${!S.variant.filtered ? "active" : ""}">All races</button>
+      <button type="button" data-filtered="true" class="${S.variant.filtered ? "active" : ""}">≥5% odds only</button></div>`;
+}
+
+async function selectVariant(v) {
+  S.variant = v;
+  try { localStorage.setItem("gambles.variant", JSON.stringify(v)); } catch {}
+  renderScenarioMatrix();
+  $("#compareCards").innerHTML = '<div class="empty">Loading…</div>';
+  await loadCompare();
+  renderCompare();
+}
+
+document.addEventListener("click", (e) => {
+  const row = e.target.closest("[data-variant-days]");
+  if (row) return selectVariant({ days: Number(row.dataset.variantDays), filtered: row.dataset.variantFiltered === "true" });
+  const t = e.target.closest("#timingSeg [data-days]");
+  if (t) return selectVariant({ ...S.variant, days: Number(t.dataset.days) });
+  const f = e.target.closest("#filterSeg [data-filtered]");
+  if (f) return selectVariant({ ...S.variant, filtered: f.dataset.filtered === "true" });
+});
+document.addEventListener("keydown", (e) => {
+  const row = e.target.closest?.("[data-variant-days]");
+  if (row && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); row.click(); }
+});
+
 function renderCompare() {
+  renderScenarioMatrix();
   const d = S.compare;
   if (!d) return;
-  if (!d.scenarios.length) { $("#compareCards").innerHTML = `<div class="empty">Scenarios are seeded after the first Kalshi scan finishes.</div>`; $("#compareTable").innerHTML = ""; return; }
-  $("#compareCards").innerHTML = d.scenarios.map((s) => `<div class="panel compare-card ${esc(s.portfolio.slug)}">
+  if (!d.scenarios.length) {
+    $("#compareCards").innerHTML = `<div class="empty">The “${esc(variantLabel(S.variant))}” portfolios are still being built from Kalshi's price history. They'll appear here in about a minute.</div>`;
+    $("#compareTable").innerHTML = ""; return;
+  }
+  $("#compareCards").innerHTML = d.scenarios.map((s) => `<div class="panel compare-card ${esc(s.party_key)}">
       <h2>${esc(s.portfolio.name)}</h2>
       <div class="big ${pnlCls(s.total_pnl)}">${money(s.total_pnl, true)}</div>
-      <div class="muted">${pct(s.total_return_pct)} on ${money(s.starting_balance)} bankroll</div>
+      <div class="muted">${pct(s.total_return_pct)} on ${money(s.starting_balance)} bankroll${s.meta?.days_ago ? ` · bought ${fmtDate(s.meta.placed_at)}` : ""}</div>
       <div class="kv mt">
         <div>Bets placed</div><div class="num">${s.open_count + s.counts.won + s.counts.lost + s.counts.sold}${s.meta?.skipped?.length ? ` <span class="muted small">(${s.meta.skipped.length} races skipped)</span>` : ""}</div>
         <div>Total staked</div><div class="num">${money(s.by_chamber.reduce((a, g) => a + g.staked, 0))}</div>
@@ -658,13 +731,14 @@ function renderCompare() {
       </div>
       <p class="muted small">${esc(s.portfolio.description)}</p>
     </div>`).join("") +
-    `<div class="panel" style="grid-column:1/-1"><div class="panel-head"><h2>Equity: Dem vs GOP</h2>
+    `<div class="panel" style="grid-column:1/-1"><div class="panel-head"><h2>P/L over time: Dem vs GOP</h2>
       <div class="legend"><span><i style="background:var(--dem)"></i>All-Dem</span><span><i style="background:var(--gop)"></i>All-GOP</span></div></div>
       <div id="compareChart" class="chart"></div></div>`;
   Promise.all(d.scenarios.map((s) => api(`/api/portfolios/${s.portfolio.id}/snapshots`))).then((snaps) => {
+    if (!$("#compareChart")) return;
     lineChart($("#compareChart"), d.scenarios.map((s, i) => ({
-      name: s.portfolio.slug === "all-dem" ? "All-Dem" : "All-GOP",
-      color: s.portfolio.slug === "all-dem" ? "var(--dem)" : "var(--gop)",
+      name: s.party_key === "all-dem" ? "All-Dem" : "All-GOP",
+      color: s.party_key === "all-dem" ? "var(--dem)" : "var(--gop)",
       points: snaps[i].map((p) => ({ t: new Date(p.ts).getTime(), v: p.equity - s.starting_balance })),
       baseline: 0,
     })));
