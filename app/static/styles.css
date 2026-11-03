@@ -256,6 +256,23 @@ dialog::backdrop { background: rgba(10, 12, 18, .45); }
 .toast.err { background: var(--neg); color: #fff; }
 .empty { padding: 30px; text-align: center; color: var(--muted); background: var(--panel); border: 1px dashed var(--border); border-radius: var(--radius); }
 
+/* expandable active-bet rows */
+tr.expandable { cursor: pointer; }
+tr.expandable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+tr.expandable.open td { background: color-mix(in srgb, var(--accent) 6%, transparent); border-bottom-color: transparent; }
+.xcell { display: flex; gap: 6px; align-items: flex-start; }
+.chev { flex: none; width: 12px; padding-top: 2px; color: var(--muted); font-size: 11px; }
+tr.expand-row > td, tr.expand-row:hover > td { background: var(--panel-2); padding: 14px 16px; }
+.bet-detail-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.bet-detail-body { display: grid; grid-template-columns: minmax(0, 1fr) 230px; gap: 18px; align-items: start; }
+.bet-chart { height: 220px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
+.bet-chart .empty { border: 0; height: 100%; display: flex; align-items: center; justify-content: center; }
+.bet-stats .kv { font-size: 13px; }
+.seg.sm button { padding: 3px 10px; font-size: 12px; }
+.chart .ref-label { font-size: 11px; font-weight: 600; }
+.chart .hover-dot { stroke: var(--panel); stroke-width: 1.5; }
+@media (max-width: 760px) { .bet-detail-body { grid-template-columns: 1fr; } }
+
 @media (max-width: 640px) {
   main { padding: 14px 16px 50px; }
   .topbar { padding: 10px 16px; }

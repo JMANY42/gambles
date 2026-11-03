@@ -230,3 +230,17 @@ def test_mark_price_falls_back_and_settles():
     assert sim.mark_price({"status": "closed", "last_price": 0.3, "yes_bid": 0, "yes_ask": 0}, "no") == 0.7
     assert sim.mark_price({"status": "finalized", "result": "yes"}, "yes") == 1.0
     assert sim.mark_price({"status": "finalized", "result": "yes"}, "no") == 0.0
+
+
+def test_candles_to_points_uses_trade_then_mid():
+    candles = [
+        {"end_period_ts": 100, "price": {"close_dollars": "0.7400"},
+         "yes_bid": {"close_dollars": "0.7300"}, "yes_ask": {"close_dollars": "0.7500"}, "volume_fp": "10"},
+        # no trade this period -> bid/ask midpoint
+        {"end_period_ts": 160, "price": {"close_dollars": None},
+         "yes_bid": {"close_dollars": "0.7000"}, "yes_ask": {"close_dollars": "0.7200"}},
+        # no trade and no quote -> skipped
+        {"end_period_ts": 220, "price": {}, "yes_bid": {}, "yes_ask": {}},
+    ]
+    pts = catalog.candles_to_points(candles)
+    assert [(p["t"], p["yes"]) for p in pts] == [(100, 0.74), (160, 0.71)]

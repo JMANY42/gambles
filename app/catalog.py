@@ -187,6 +187,43 @@ async def refresh_quotes(client: KalshiClient, tickers: list[str]) -> int:
     return len(raw)
 
 
+def candles_to_points(candles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Flatten Kalshi candlesticks into YES-price points.
+
+    Price is the candle's last trade; for periods with no trades it falls back
+    to the bid/ask midpoint, so quiet stretches still plot."""
+    points = []
+    for c in candles:
+        price = c.get("price") or {}
+        bid = _f((c.get("yes_bid") or {}).get("close_dollars"))
+        ask = _f((c.get("yes_ask") or {}).get("close_dollars"))
+        value = _f(price.get("close_dollars"))
+        if value is None and bid is not None and ask is not None and 0 < ask <= 1:
+            value = round((bid + ask) / 2, 4)
+        if value is None:
+            continue
+        points.append({"t": c["end_period_ts"], "yes": value, "yes_bid": bid, "yes_ask": ask,
+                       "volume": _f(c.get("volume_fp"))})
+    return points
+
+
+async def series_for_market(client: KalshiClient, ticker: str) -> str | None:
+    """Series ticker for a market (needed by the candlestick endpoint), cached in the DB."""
+    with db.tx() as conn:
+        row = conn.execute("SELECT series_ticker, event_ticker FROM markets WHERE ticker = ?",
+                           (ticker,)).fetchone()
+    if row and row["series_ticker"]:
+        return row["series_ticker"]
+    event_ticker = row["event_ticker"] if row else (await client.market(ticker)).get("event_ticker")
+    if not event_ticker:
+        return None
+    series = ((await client.event(event_ticker)).get("event") or {}).get("series_ticker")
+    if series and row:
+        with db.tx() as conn:
+            conn.execute("UPDATE markets SET series_ticker = ? WHERE ticker = ?", (series, ticker))
+    return series
+
+
 async def ensure_market(client: KalshiClient, ticker: str) -> dict[str, Any] | None:
     """Fetch a market (and its event, for titles) into the cache; return the row."""
     with db.tx() as conn:

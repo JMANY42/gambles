@@ -69,12 +69,16 @@ const S = {
   compare: null,
   sort: {},
   bet: null,
+  expanded: new Set(),   // open-bet ids whose detail row is expanded
+  betRange: {},          // bet id -> chart range (1d/1w/1m/all)
+  hist: {},              // "TICKER|range" -> {at, data} price-history cache
 };
 const savedPid = () => { try { return Number(localStorage.getItem("gambles.pid")) || null; } catch { return null; } };
 const savePid = (id) => { try { localStorage.setItem("gambles.pid", id); } catch {} };
 
 // ---------- sortable tables ----------
-function table(id, cols, rows, { foot = null, empty = "Nothing here yet." } = {}) {
+// expand: optional { id: (row) => key, isOpen: (key) => bool, render: (row) => html, toggle: (key) => void }
+function table(id, cols, rows, { foot = null, empty = "Nothing here yet.", expand = null } = {}) {
   const el = typeof id === "string" ? $(id) : id;
   if (!rows.length) { el.innerHTML = `<div class="empty">${empty}</div>`; return; }
   const key = el.id || "t";
@@ -90,7 +94,18 @@ function table(id, cols, rows, { foot = null, empty = "Nothing here yet." } = {}
   }
   el.innerHTML = `<div class="table-wrap"><table>
     <thead><tr>${cols.map((c) => `<th data-key="${c.key}" class="${c.num ? "num" : ""} ${c.nosort ? "nosort" : ""}">${c.label}${st?.key === c.key ? `<span class="arrow">${st.dir > 0 ? "▲" : "▼"}</span>` : ""}</th>`).join("")}</tr></thead>
-    <tbody>${rows.map((r) => `<tr>${cols.map((c) => `<td class="${c.num ? "num" : ""} ${c.cls || ""}">${c.render ? c.render(r) : esc(r[c.key])}</td>`).join("")}</tr>`).join("")}</tbody>
+    <tbody>${rows.map((r) => {
+      const xid = expand?.id(r), open = expand?.isOpen(xid);
+      const cells = cols.map((c, i) => {
+        const body = c.render ? c.render(r) : esc(r[c.key]);
+        const inner = i === 0 && expand
+          ? `<div class="xcell"><span class="chev" aria-hidden="true">${open ? "▾" : "▸"}</span><div>${body}</div></div>` : body;
+        return `<td class="${c.num ? "num" : ""} ${c.cls || ""}">${inner}</td>`;
+      }).join("");
+      if (!expand) return `<tr>${cells}</tr>`;
+      return `<tr class="expandable ${open ? "open" : ""}" data-xid="${esc(xid)}" tabindex="0" aria-expanded="${open}">${cells}</tr>` +
+        (open ? `<tr class="expand-row"><td colspan="${cols.length}">${expand.render(r)}</td></tr>` : "");
+    }).join("")}</tbody>
     ${foot ? `<tfoot><tr>${foot.map((f, i) => `<td class="${cols[i]?.num ? "num" : ""}">${f ?? ""}</td>`).join("")}</tr></tfoot>` : ""}
   </table></div>`;
   $$("th", el).forEach((th) => th.addEventListener("click", () => {
@@ -99,23 +114,44 @@ function table(id, cols, rows, { foot = null, empty = "Nothing here yet." } = {}
     S.sort[key] = { key: k, dir: S.sort[key]?.key === k ? -S.sort[key].dir : -1 };
     renderAll();
   }));
+  if (expand) {
+    const onToggle = (e) => {
+      const tr = e.target.closest("tr.expandable");
+      // Clicks on buttons/links inside the row (e.g. Sell) keep their own behaviour.
+      if (!tr || e.target.closest("button, a, input, select")) return;
+      if (e.type === "keydown" && e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      const xid = tr.dataset.xid;
+      expand.toggle(xid);
+      // The table re-renders on toggle; keep keyboard focus on the same row.
+      $$("tr.expandable", el).find((r) => r.dataset.xid === xid)?.focus();
+    };
+    $("tbody", el).addEventListener("click", onToggle);
+    $("tbody", el).addEventListener("keydown", onToggle);
+  }
 }
 
-// ---------- equity chart (hand-rolled SVG) ----------
-function lineChart(el, series, { height = 200 } = {}) {
+// ---------- line chart (hand-rolled SVG) ----------
+// opts.fmt formats y values (axis + tooltip); opts.hlines draws labelled horizontal
+// reference lines [{v, label, color}]; opts.markers draws vertical time markers [{t, label}].
+function lineChart(el, series, { height = 200, fmt = money, axisFmt = null, hlines = [], markers = [], emptyMsg = null, yMin = null, yMax = null } = {}) {
   const all = series.flatMap((s) => s.points);
-  if (all.length < 2) { el.innerHTML = `<div class="empty">The chart fills in as prices refresh. A point is recorded every few minutes.</div>`; return; }
-  const w = el.clientWidth || 800, h = height, padL = 70, padR = 12, padT = 10, padB = 22;
-  const xs = all.map((p) => p.t), ys = all.map((p) => p.v);
+  if (all.length < 2) { el.innerHTML = `<div class="empty">${emptyMsg || "The chart fills in as prices refresh. A point is recorded every few minutes."}</div>`; return; }
+  axisFmt ||= (v) => fmt(v).replace(/\.\d\d$/, "");
+  const w = el.clientWidth || 800, h = height, padL = 64, padR = 12, padT = 12, padB = 22;
+  const xs = all.map((p) => p.t);
+  const ys = [...all.map((p) => p.v), ...hlines.map((l) => l.v)];
   let x0 = Math.min(...xs), x1 = Math.max(...xs); if (x1 === x0) x1 = x0 + 1;
   let y0 = Math.min(...ys), y1 = Math.max(...ys);
-  const padY = (y1 - y0) * 0.1 || Math.max(1, Math.abs(y1) * 0.002); y0 -= padY; y1 += padY;
+  const padY = (y1 - y0) * 0.1 || Math.max(0.01, Math.abs(y1) * 0.002); y0 -= padY; y1 += padY;
+  if (yMin != null) y0 = Math.max(y0, yMin);
+  if (yMax != null) y1 = Math.min(y1, yMax);
   const X = (t) => padL + ((t - x0) / (x1 - x0)) * (w - padL - padR);
   const Y = (v) => padT + (1 - (v - y0) / (y1 - y0)) * (h - padT - padB);
   const ticks = 4, grid = [];
   for (let i = 0; i <= ticks; i++) {
     const v = y0 + ((y1 - y0) * i) / ticks;
-    grid.push(`<line x1="${padL}" x2="${w - padR}" y1="${Y(v)}" y2="${Y(v)}"/><text x="${padL - 8}" y="${Y(v) + 4}" text-anchor="end">${money(v).replace(/\.\d\d$/, "")}</text>`);
+    grid.push(`<line x1="${padL}" x2="${w - padR}" y1="${Y(v)}" y2="${Y(v)}"/><text x="${padL - 8}" y="${Y(v) + 4}" text-anchor="end">${axisFmt(v)}</text>`);
   }
   const xl = [x0, (x0 + x1) / 2, x1].map((t, i) => `<text x="${X(t)}" y="${h - 4}" text-anchor="${["start", "middle", "end"][i]}">${fmtDate(new Date(t).toISOString())}</text>`);
   const paths = series.map((s) => {
@@ -123,13 +159,24 @@ function lineChart(el, series, { height = 200 } = {}) {
     return `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round"/>`;
   });
   const base = series.find((s) => s.baseline != null)?.baseline;
-  const baseLine = base != null && base >= y0 && base <= y1
-    ? `<line x1="${padL}" x2="${w - padR}" y1="${Y(base)}" y2="${Y(base)}" stroke="var(--muted)" stroke-dasharray="4 4" opacity=".6"/>` : "";
+  const refs = [...hlines];
+  if (base != null) refs.push({ v: base, color: "var(--muted)" });
+  const refLines = refs.filter((l) => l.v >= y0 && l.v <= y1).map((l) =>
+    `<line x1="${padL}" x2="${w - padR}" y1="${Y(l.v)}" y2="${Y(l.v)}" stroke="${l.color || "var(--muted)"}" stroke-dasharray="4 4" opacity=".8"/>` +
+    (l.label ? `<text class="ref-label" x="${padL + 6}" y="${Y(l.v) - 5}" fill="${l.color || "var(--muted)"}">${esc(l.label)}</text>` : "")).join("");
+  const markerLines = markers.filter((m) => m.t >= x0 && m.t <= x1).map((m) =>
+    `<line x1="${X(m.t)}" x2="${X(m.t)}" y1="${padT}" y2="${h - padB}" stroke="var(--muted)" stroke-dasharray="2 3"/>` +
+    `<circle cx="${X(m.t)}" cy="${padT}" r="3" fill="var(--muted)"/>` +
+    // Near the right edge, put the label on the marker's left so it stays inside the chart.
+    (m.label ? (X(m.t) > (padL + w) / 2
+      ? `<text class="ref-label" x="${X(m.t) - 6}" y="${padT + 4}" text-anchor="end" fill="var(--muted)">${esc(m.label)}</text>`
+      : `<text class="ref-label" x="${X(m.t) + 6}" y="${padT + 4}" fill="var(--muted)">${esc(m.label)}</text>`) : "")).join("");
   el.innerHTML = `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
-    <g class="grid axis">${grid.join("")}</g><g class="axis">${xl.join("")}</g>${baseLine}${paths.join("")}
+    <g class="grid axis">${grid.join("")}</g><g class="axis">${xl.join("")}</g>${refLines}${markerLines}${paths.join("")}
     <line class="hover" y1="${padT}" y2="${h - padB}" stroke="var(--muted)" opacity="0"/>
+    <circle class="hover-dot" r="3.5" opacity="0"/>
     <rect x="${padL}" y="0" width="${w - padL - padR}" height="${h}" fill="transparent"/></svg><div class="tip" hidden></div>`;
-  const svg = $("svg", el), tip = $(".tip", el), hl = $(".hover", el);
+  const svg = $("svg", el), tip = $(".tip", el), hl = $(".hover", el), dot = $(".hover-dot", el);
   svg.addEventListener("mousemove", (e) => {
     const r = svg.getBoundingClientRect();
     const t = x0 + ((e.clientX - r.left) * (w / r.width) - padL) / (w - padL - padR) * (x1 - x0);
@@ -139,14 +186,18 @@ function lineChart(el, series, { height = 200 } = {}) {
     });
     const px = X(lines[0].p.t);
     hl.setAttribute("x1", px); hl.setAttribute("x2", px); hl.setAttribute("opacity", ".5");
+    if (series.length === 1) {
+      dot.setAttribute("cx", px); dot.setAttribute("cy", Y(lines[0].p.v));
+      dot.setAttribute("fill", series[0].color); dot.setAttribute("opacity", "1");
+    }
     tip.hidden = false;
     tip.innerHTML = `<div class="muted">${fmtDate(new Date(lines[0].p.t).toISOString())}</div>` +
-      lines.map(({ s, p }) => `<div><span style="color:${s.color}">●</span> ${esc(s.name)}: <b>${money(p.v)}</b></div>`).join("");
+      lines.map(({ s, p }) => `<div><span style="color:${s.color}">●</span> ${esc(s.name)}: <b>${fmt(p.v)}</b></div>`).join("");
     const left = (px / w) * r.width;
-    tip.style.left = Math.min(left + 12, r.width - tip.offsetWidth - 4) + "px";
+    tip.style.left = Math.max(4, Math.min(left + 12, r.width - tip.offsetWidth - 4)) + "px";
     tip.style.top = "8px";
   });
-  svg.addEventListener("mouseleave", () => { tip.hidden = true; hl.setAttribute("opacity", "0"); });
+  svg.addEventListener("mouseleave", () => { tip.hidden = true; hl.setAttribute("opacity", "0"); dot.setAttribute("opacity", "0"); });
 }
 
 // ---------- data loading ----------
@@ -310,9 +361,101 @@ function renderActive() {
     { key: "_sell", label: "", nosort: true, render: (b) => `<button class="btn sm ghost" data-sell="${b.id}" ${b.market_status === "active" ? "" : "disabled"}>Sell</button>` },
   ], rows, {
     empty: "No active bets. Pick something from Available Bets.",
-    foot: rows.length ? [`${rows.length} positions`, "", "", "", "", money(sum("cost") + sum("entry_fee")), money(sum("market_value")), pnl(sum("unrealized_pnl")), pnl(sum("max_profit")), "", ""] : null,
+    foot: rows.length ? [`${rows.length} position${rows.length === 1 ? "" : "s"}`, "", "", "", "", money(sum("cost") + sum("entry_fee")), money(sum("market_value")), pnl(sum("unrealized_pnl")), pnl(sum("max_profit")), "", ""] : null,
+    expand: {
+      id: (b) => String(b.id),
+      isOpen: (id) => S.expanded.has(Number(id)),
+      render: betDetailHtml,
+      toggle: (id) => {
+        id = Number(id);
+        S.expanded.has(id) ? S.expanded.delete(id) : S.expanded.add(id);
+        renderActive();
+      },
+    },
   });
+  // Forget expansions for bets that are no longer open, then draw the visible charts.
+  for (const id of S.expanded) if (!S.open.some((b) => b.id === id)) S.expanded.delete(id);
+  rows.filter((b) => S.expanded.has(b.id)).forEach(drawBetChart);
 }
+
+// ---------- per-bet price history ----------
+const RANGES = [["1d", "1D"], ["1w", "1W"], ["1m", "1M"], ["all", "All"]];
+const HIST_TTL_MS = 60_000;
+
+function betDetailHtml(b) {
+  const range = S.betRange[b.id] || "1w";
+  return `<div class="bet-detail" data-detail="${b.id}">
+    <div class="bet-detail-head">
+      <div><b>${esc(b.side.toUpperCase())} price</b> <span class="muted small">· ${esc(b.market_ticker)}</span></div>
+      <div class="seg sm" role="group" aria-label="Chart range">${RANGES.map(([k, l]) =>
+        `<button type="button" data-range="${k}" data-range-bet="${b.id}" class="${k === range ? "active" : ""}">${l}</button>`).join("")}</div>
+    </div>
+    <div class="bet-detail-body">
+      <div class="chart bet-chart"><div class="empty">Loading price history…</div></div>
+      <div class="bet-stats"></div>
+    </div>
+  </div>`;
+}
+
+async function fetchHistory(ticker, range) {
+  const key = `${ticker}|${range}`, hit = S.hist[key];
+  if (hit && Date.now() - hit.at < HIST_TTL_MS) return hit.data;
+  const data = await api(`/api/markets/${encodeURIComponent(ticker)}/history?range=${range}`);
+  S.hist[key] = { at: Date.now(), data };
+  return data;
+}
+
+async function drawBetChart(b) {
+  const range = S.betRange[b.id] || "1w";
+  const box = () => document.querySelector(`[data-detail="${b.id}"]`);
+  let data;
+  try { data = await fetchHistory(b.market_ticker, range); }
+  catch (e) { const el = box(); if (el) $(".bet-chart", el).innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  const el = box();
+  if (!el || (S.betRange[b.id] || "1w") !== range) return; // collapsed or range changed meanwhile
+
+  const toSide = (yes) => (b.side === "yes" ? yes : 1 - yes);
+  const points = data.points.map((p) => ({ t: p.t * 1000, v: toSide(p.yes) }));
+  if (b.mark_price != null) points.push({ t: Date.now(), v: b.mark_price }); // end the line at "now"
+  const color = b.side === "yes" ? "var(--pos)" : "var(--neg)";
+  lineChart($(".bet-chart", el), [{ name: `${b.side.toUpperCase()} price`, color, points }], {
+    height: 220,
+    fmt: cents,
+    axisFmt: cents,
+    yMin: 0, yMax: 1,
+    hlines: [{ v: b.entry_price, label: `Your entry ${cents(b.entry_price)}`, color: "var(--accent)" }],
+    markers: [{ t: new Date(b.placed_at).getTime(), label: "Bet placed" }],
+    emptyMsg: "Kalshi has no trades for this market in this range yet.",
+  });
+
+  const vs = points.map((p) => p.v);
+  const chg = points.length ? points.at(-1).v - points[0].v : null;
+  const sinceEntry = b.mark_price != null ? b.mark_price - b.entry_price : null;
+  const signed = (d) => (d == null ? "—" : `${d >= 0 ? "+" : "−"}${cents(Math.abs(d))}`);
+  $(".bet-stats", el).innerHTML = `<div class="kv">
+    <div>Your entry</div><div class="num">${cents(b.entry_price)}</div>
+    <div>Now</div><div class="num">${cents(b.mark_price)}</div>
+    <div>Since entry</div><div class="num ${pnlCls(sinceEntry)}">${signed(sinceEntry)}</div>
+    <div>Range change</div><div class="num ${pnlCls(chg)}">${signed(chg)}</div>
+    <div>Range high</div><div class="num">${vs.length ? cents(Math.max(...vs)) : "—"}</div>
+    <div>Range low</div><div class="num">${vs.length ? cents(Math.min(...vs)) : "—"}</div>
+    <div>Implied odds now</div><div class="num">${prob(b.mark_price)}</div>
+    <div>Position P/L</div><div class="num">${pnl(b.unrealized_pnl)}</div>
+  </div>`;
+}
+
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-range-bet]");
+  if (!btn) return;
+  const id = Number(btn.dataset.rangeBet);
+  S.betRange[id] = btn.dataset.range;
+  const el = document.querySelector(`[data-detail="${id}"]`);
+  const b = S.open.find((x) => x.id === id);
+  if (!el || !b) return;
+  $$("[data-range]", el).forEach((x) => x.classList.toggle("active", x === btn));
+  $(".bet-chart", el).innerHTML = '<div class="empty">Loading price history…</div>';
+  drawBetChart(b);
+});
 
 function groupTable(title, groups, labeler = (g) => esc(g)) {
   if (!groups?.length) return "";
@@ -600,7 +743,10 @@ $("#rediscover").addEventListener("click", async () => {
   toast(r.started ? "Scanning Kalshi… new races will appear in about a minute" : "A scan is already running");
 });
 
-window.addEventListener("resize", () => { renderChart(); });
+window.addEventListener("resize", () => {
+  renderChart();
+  S.open.filter((b) => S.expanded.has(b.id)).forEach(drawBetChart);
+});
 
 // ---------- boot ----------
 refreshEverything();

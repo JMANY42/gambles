@@ -12,7 +12,8 @@ reads public market data and never places orders.
 - **Paper betting**: buy YES or NO by dollars or by contracts. Orders fill at the live ask, and the
   preview shows cost, Kalshi's fee, payout if the bet wins, and the loss if it doesn't.
 - **Active Bets**: positions valued at the bid/ask mid-price, with unrealized P/L, the payout if each
-  bet wins, and one-click early **Sell** at the live bid.
+  bet wins, and one-click early **Sell** at the live bid. **Click any bet to expand its price chart**
+  (1D / 1W / 1M / All, from Kalshi's price history), which marks your entry price and when you placed the bet.
 - **History & Breakdown**: wins, losses and early sales, win rate, gross winnings and losses, biggest
   win and loss, and P/L split by race type, party and category.
 - **Automatic settlement**: a background loop refreshes prices every 60 seconds. When Kalshi finalizes

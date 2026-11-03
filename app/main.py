@@ -222,6 +222,41 @@ async def quote(ticker: str, side: str, dollars: float | None = None,
             "max_profit": sim.cents(n - cost - fee), "implied_prob": ask}
 
 
+# (span seconds or None for "since listing", candle period in minutes)
+HISTORY_RANGES = {"1d": (86_400, 1), "1w": (7 * 86_400, 60), "1m": (30 * 86_400, 60), "all": (None, 1440)}
+_history_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+HISTORY_TTL = 60.0
+
+
+@app.get("/api/markets/{ticker}/history")
+async def market_history(ticker: str,
+                         range: str = Query("1w", pattern="^(1d|1w|1m|all)$")) -> dict[str, Any]:
+    """YES-price history for a market. Clients convert to the NO side as 1 - yes."""
+    assert state.client
+    ticker = ticker.upper()
+    key = (ticker, range)
+    hit = _history_cache.get(key)
+    if hit and time.monotonic() - hit[0] < HISTORY_TTL:
+        return hit[1]
+    try:
+        series = await catalog.series_for_market(state.client, ticker)
+    except Exception as exc:
+        raise HTTPException(502, f"Could not resolve market series: {exc}")
+    if not series:
+        raise HTTPException(404, "Market not found")
+    span, period = HISTORY_RANGES[range]
+    end = int(time.time())
+    start = end - span if span else end - 3 * 365 * 86_400  # Kalshi clips to the listing date
+    try:
+        candles = await state.client.candlesticks(series, ticker, start, end, period)
+    except Exception as exc:
+        raise HTTPException(502, f"Kalshi price history unavailable: {exc}")
+    out = {"ticker": ticker, "range": range, "period_minutes": period,
+           "points": catalog.candles_to_points(candles)}
+    _history_cache[key] = (time.monotonic(), out)
+    return out
+
+
 # --- portfolios & bets --------------------------------------------------------
 
 class PortfolioIn(BaseModel):

@@ -135,6 +135,15 @@ class KalshiClient:
             out.extend(data.get("markets") or [])
         return out
 
+    async def candlesticks(self, series_ticker: str, ticker: str, start_ts: int, end_ts: int,
+                           period_minutes: int) -> list[dict[str, Any]]:
+        """OHLC price history. period_minutes must be 1, 60 or 1440."""
+        data = await self.get(
+            f"/series/{series_ticker}/markets/{ticker}/candlesticks",
+            {"start_ts": start_ts, "end_ts": end_ts, "period_interval": period_minutes},
+        )
+        return data.get("candlesticks") or []
+
     async def market(self, ticker: str) -> dict[str, Any]:
         try:
             return (await self.get(f"/markets/{ticker}")).get("market") or {}
